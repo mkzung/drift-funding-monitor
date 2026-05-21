@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "drift-funding-monitor"
+version = "0.1.0"
+description = "Cross-venue funding-rate arbitrage monitor for Drift Protocol (Solana) and EVM-perp venues."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Max Gorbuk" }]
+requires-python = ">=3.10"
+dependencies = [
+  "pydantic>=2.5",
+  "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.4",
+  "pytest-cov>=4.1",
+  "pytest-asyncio>=0.23",
+  "ruff>=0.6",
+  "mypy>=1.8",
+]
+streamlit = [
+  "streamlit>=1.30",
+  "pandas>=2.0",
+]
+
+[project.scripts]
+dfm = "dfm.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/mkzung/drift-funding-monitor"
+Repository = "https://github.com/mkzung/drift-funding-monitor"
+Issues = "https://github.com/mkzung/drift-funding-monitor/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dfm"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N", "SIM", "RET"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --strict-markers"
+asyncio_mode = "auto"
