@@ -158,12 +158,33 @@ class LiquidityImbalance:
     def run(
         self, quote_now: CrossVenueQuote, position: Position
     ) -> RiskDetectorResult:
+        # Resolve venues in POSITION direction, not by quote high/low — if
+        # venues rotated between open and now, `quote.high_venue` is the
+        # position's LONG leg and reading its ask_depth would check the
+        # wrong side. Same hazard the Round-2 FundingFlipRisk fix addressed;
+        # Round-4 audit caught it here too.
+        high, low = quote_now.high_venue, quote_now.low_venue
+        if position.short_venue == high.venue and position.long_venue == low.venue:
+            short_state, long_state = high, low
+        elif position.short_venue == low.venue and position.long_venue == high.venue:
+            short_state, long_state = low, high
+        else:
+            return RiskDetectorResult(
+                name="LiquidityImbalance",
+                triggered=False,
+                severity=0.0,
+                headline="Quote venues don't cover this position; depth check skipped.",
+                evidence={
+                    "quote_high_venue": high.venue.value,
+                    "quote_low_venue": low.venue.value,
+                    "position_short_venue": position.short_venue.value,
+                    "position_long_venue": position.long_venue.value,
+                },
+            )
         # Closing requires hitting the OPPOSITE sides of what we used to open:
-        # short on high venue → buy back into ASKS of high venue
-        # long on low venue → sell out into BIDS of low venue
-        binding_depth = min(
-            quote_now.high_venue.ask_depth_usd, quote_now.low_venue.bid_depth_usd
-        )
+        # short leg → buy back into ASKS of short venue
+        # long leg → sell out into BIDS of long venue
+        binding_depth = min(short_state.ask_depth_usd, long_state.bid_depth_usd)
         needed = position.notional_usd * self.safety_factor
         triggered = binding_depth < needed
         severity = max(0.0, min(1.0, 1.0 - binding_depth / max(needed, 1.0)))
@@ -178,8 +199,10 @@ class LiquidityImbalance:
             evidence={
                 "binding_exit_depth_usd": binding_depth,
                 "required_depth_usd": needed,
-                "high_venue_ask_depth_usd": quote_now.high_venue.ask_depth_usd,
-                "low_venue_bid_depth_usd": quote_now.low_venue.bid_depth_usd,
+                "short_venue_ask_depth_usd": short_state.ask_depth_usd,
+                "long_venue_bid_depth_usd": long_state.bid_depth_usd,
+                "short_venue": short_state.venue.value,
+                "long_venue": long_state.venue.value,
             },
         )
 

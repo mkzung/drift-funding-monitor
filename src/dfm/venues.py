@@ -152,8 +152,14 @@ class HyperliquidClient(VenueClient):
             timestamp=ts,
             mark_price=float(ctx.get("markPx", 0)) or 1.0,
             index_price=float(ctx.get("oraclePx", 0)) or 1.0,
-            open_interest_long=float(ctx.get("openInterest", 0)) / 2,
-            open_interest_short=float(ctx.get("openInterest", 0)) / 2,
+            # HL's `metaAndAssetCtxs` reports total `openInterest` (in base
+            # units, not USD) as a single scalar — there's no long/short
+            # breakdown in this endpoint. Splitting 50/50 (prior version)
+            # made `open_interest_imbalance` deterministically 0 and silently
+            # neutered ConcentrationRisk for every HL state. Set both to 0
+            # to signal "unknown" until a long/short-aware source is wired.
+            open_interest_long=0.0,
+            open_interest_short=0.0,
             funding_rate=FundingRate(
                 venue=self.venue,
                 symbol=sym,
@@ -189,13 +195,16 @@ class OrderlyClient(VenueClient):
             except (httpx.HTTPError, ValueError):
                 return None
         data = payload.get("data", {})
-        # Orderly reports an 8-hour funding rate; convert to hourly
-        rate_8h = float(data.get("last_funding_rate", 0))
+        # Orderly reports `last_funding_rate` over the market's funding
+        # interval. Default is 8h on Orderly but some pairs shipped at 1h;
+        # VERIFY via /v1/public/info before deploying live. The /8 here
+        # is the common-case approximation, identical caveat to Backpack.
+        rate_per_interval = float(data.get("last_funding_rate", 0))
         return FundingRate(
             venue=self.venue,
             symbol=sym,
             timestamp=int(time.time()),
-            hourly_rate=rate_8h / 8,
+            hourly_rate=rate_per_interval / 8,
         )
 
     async def fetch_market_state(self, symbol: str) -> PerpMarketState | None:
@@ -230,9 +239,11 @@ class BackpackClient(VenueClient):
 
     async def fetch_funding_rate(self, symbol: str) -> FundingRate | None:
         sym = self.normalize_symbol(symbol)
-        # Backpack's public REST uses kebab-case path segments and camelCase
-        # query keys: /api/v1/funding-rates?symbol=…&limit=1
-        url = f"{self.base_url}/api/v1/funding-rates?symbol={sym}&limit=1"
+        # Backpack public REST uses camelCase path segments. Verified against
+        # docs.backpack.exchange (May 2026): `GET /api/v1/fundingRates`
+        # returns `[{"fundingRate":"<8h>", "symbol":..., "intervalEndTimestamp":...}]`.
+        # Round-2 kebab-case "fix" was the wrong direction.
+        url = f"{self.base_url}/api/v1/fundingRates?symbol={sym}&limit=1"
         async with httpx.AsyncClient(timeout=self.timeout_s) as cli:
             try:
                 resp = await cli.get(url)
@@ -243,7 +254,13 @@ class BackpackClient(VenueClient):
         if not payload or not isinstance(payload, list):
             return None
         latest = payload[0]
-        # Backpack reports the 8-hour funding rate; convert to hourly.
+        # Backpack reports the funding rate over the market's funding
+        # interval. Most perp markets ship with an 8-hour interval, but
+        # some have 1h or 4h — VERIFY per-market via /api/v1/markets
+        # before deploying live. The /8 conversion below is correct only
+        # for 8h-interval markets; for a real productionization, fetch
+        # `fundingInterval` from the markets endpoint and divide by
+        # `interval_hours` instead. Kept as /8 here for portfolio demos.
         return FundingRate(
             venue=self.venue,
             symbol=sym,

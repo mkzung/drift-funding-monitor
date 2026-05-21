@@ -94,12 +94,64 @@ class TestBacktest:
         # treated as positive carry).
         assert result.n_trades == 1
         t = result.trades[0]
-        # Key invariant: accrual must be NEGATIVE or near-zero, not the
-        # pre-fix's ~+$120. Tight upper bound proves the rotation is seen.
-        assert t.funding_pnl_usd < 20.0, (
+        # Closed-form expected value (signal-side accrual, end-of-interval):
+        #   q2 (Δt=1h, pre-rotation):  +0.0004 × notional × 1 = +$40
+        #   q3 (Δt=1h, post-rotation): -0.0004 × notional × 1 = -$40
+        #   q4 (Δt=1h, post-rotation, close): -0.0004 × notional × 1 = -$40
+        # Total accrued at close = +40 − 40 − 40 = -$40 (notional ≈ $100k).
+        # Pre-fix would have produced +$120 (all three steps positive).
+        assert -45.0 < t.funding_pnl_usd < -35.0, (
             f"Venue-rotation accrual = ${t.funding_pnl_usd:.2f}; "
-            f"pre-fix bug returned ~$120 (rotation ignored). "
-            f"Post-fix should be ≤ 0 ± small trapezoidal artifact."
+            f"closed-form expected ≈ -$40 (+$40 pre-rotation, -$80 post). "
+            f"Pre-fix bug returned ~+$120."
+        )
+
+    def test_backtest_basis_pnl_respects_venue_rotation(self):
+        """Round-4 regression test: ensure basis PnL also reads marks in
+        the position's carry direction. Pre-fix, `quote.high_venue.mark_price`
+        was used unconditionally for the short leg — when venues rotated,
+        the wrong mark was read and basis PnL sign-flipped silently.
+        """
+        from dfm.state import CrossVenueQuote, FundingRate, PerpMarketState, Venue
+        def st(venue, hr, mark, ts):
+            return PerpMarketState(
+                venue=venue, symbol="SOL-PERP", timestamp=ts,
+                mark_price=mark, index_price=mark,
+                bid_depth_usd=500_000, ask_depth_usd=500_000,
+                funding_rate=FundingRate(venue=venue, symbol="SOL-PERP",
+                                          timestamp=ts, hourly_rate=hr),
+            )
+        # Open at t=0: DRIFT high (150), HL low (150). After rotation at
+        # t=3600s, marks also diverge — HL up to 152, DRIFT down to 148.
+        # Position is short DRIFT @ 150, long HL @ 150. With short_state.mark
+        # = 148 and long_state.mark = 152:
+        #   long PnL  = (152 - 150) × size_long  = +$2 × size
+        #   short PnL = (150 - 148) × size_short = +$2 × size
+        # Both legs profitable → basis PnL strongly POSITIVE.
+        # Pre-fix would have read short_state.mark = quote.high_venue.mark = 152
+        # (now HL, the long leg!) and long_state.mark = quote.low_venue.mark = 148
+        # → both PnL negative → sign-flipped result.
+        q1 = CrossVenueQuote(symbol="SOL-PERP", timestamp=0,
+            high_venue=st(Venue.DRIFT, 0.0005, 150.0, 0),
+            low_venue=st(Venue.HYPERLIQUID, 0.0001, 150.0, 0))
+        # Rotation + price divergence
+        q2 = CrossVenueQuote(symbol="SOL-PERP", timestamp=3600,
+            high_venue=st(Venue.HYPERLIQUID, -0.0005, 152.0, 3600),
+            low_venue=st(Venue.DRIFT, -0.0001, 148.0, 3600))
+        # Force close via spread-flip
+        result = run_backtest([q1, q2], BacktestConfig(
+            thresholds=SignalThresholds(taker_fee_bps=0.0),
+            close_spread_bps_per_hour=10.0,  # any small positive spread closes
+            max_holding_hours=100,
+        ))
+        assert result.n_trades == 1
+        t = result.trades[0]
+        # Strong positive basis PnL proves marks were read in position direction.
+        # Pre-fix would have produced strong NEGATIVE basis PnL.
+        assert t.basis_pnl_usd > 100.0, (
+            f"Basis PnL = ${t.basis_pnl_usd:.2f}; expected strongly POSITIVE "
+            f"(both legs profit after rotation+divergence). "
+            f"Pre-fix bug would have returned negative."
         )
 
     def test_funding_accrual_matches_closed_form(self):
@@ -146,7 +198,10 @@ class TestBacktest:
 
 
 class TestEvaluatePositionRisks:
-    def test_returns_six_results(self):
+    def test_returns_eight_results_per_venue_detectors_run_on_both_legs(self):
+        # 8 = 4 position-level (FundingFlipRisk, LiquidityImbalance,
+        # DataStaleness, MaxDrawdownGate) + 2 per-venue × 2 legs
+        # (ConcentrationRisk + BasisBlowoutRisk on both high and low).
         from dfm.state import Position
         q = make_cross_venue_quote()
         pos = Position(
@@ -158,10 +213,13 @@ class TestEvaluatePositionRisks:
             entry_funding_diff_hourly=0.0004,
         )
         results = evaluate_position_risks(q, pos, hours_held=2, realized_pnl_usd=10)
-        assert len(results) == 6
+        assert len(results) == 8
         names = [r.name for r in results]
         assert "FundingFlipRisk" in names
         assert "MaxDrawdownGate" in names
+        # Per-venue detectors should appear exactly twice
+        assert names.count("ConcentrationRisk") == 2
+        assert names.count("BasisBlowoutRisk") == 2
 
 
 # ──────────────────────────────────────────────────────────────────────

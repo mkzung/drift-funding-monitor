@@ -42,6 +42,7 @@ from .state import (
     Venue,
     VenueHistory,
 )
+from .synthetic import make_cross_venue_quote, make_oscillating_spread
 from .venues import (
     BackpackClient,
     DriftClient,
@@ -69,6 +70,8 @@ __all__ = [
     "DataStaleness", "ConcentrationRisk", "BasisBlowoutRisk", "MaxDrawdownGate",
     # backtest
     "BacktestConfig", "BacktestResult", "Trade", "run_backtest",
+    # synthetic (demos / tests)
+    "make_cross_venue_quote", "make_oscillating_spread",
     # runner
     "ScanResult", "scan_symbol", "evaluate_position_risks",
     # reports

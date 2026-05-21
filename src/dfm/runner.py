@@ -78,12 +78,20 @@ def evaluate_position_risks(
     hours_held: float,
     realized_pnl_usd: float = 0.0,
 ) -> list[RiskDetectorResult]:
-    """All 6 risk detectors fired against an open position."""
+    """Run all risk detectors against an open position.
+
+    Returns one `RiskDetectorResult` per (detector, applicable-venue) pair.
+    Per-venue detectors (`ConcentrationRisk`, `BasisBlowoutRisk`) fire on
+    BOTH legs — the prior version dropped `quote.low_venue`, hiding single-
+    sided OI imbalance or basis blowout on the long leg.
+    """
     return [
         FundingFlipRisk().run(quote, position, hours_held),
         LiquidityImbalance().run(quote, position),
         DataStaleness().run(quote),
         ConcentrationRisk().run(quote.high_venue),
+        ConcentrationRisk().run(quote.low_venue),
         BasisBlowoutRisk().run(quote.high_venue),
+        BasisBlowoutRisk().run(quote.low_venue),
         MaxDrawdownGate().run(position, realized_pnl_usd),
     ]

@@ -15,8 +15,38 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from statistics import StatisticsError, mean, stdev
 
-from .signals import ArbSignal, SignalThresholds, evaluate
-from .state import CrossVenueQuote, Position, Venue
+from .signals import SignalThresholds, evaluate
+from .state import CrossVenueQuote, PerpMarketState, Position, Venue
+
+
+def _resolve_position_venues(
+    quote: CrossVenueQuote, position: Position
+) -> tuple[PerpMarketState | None, PerpMarketState | None]:
+    """Resolve which side of `quote` corresponds to the position's short/long
+    venues, accounting for venue rotation between open and now.
+
+    Returns (short_state, long_state) in the position's carry direction, or
+    (None, None) if the quote doesn't cover both of the position's venues.
+    Callers MUST handle the None case rather than silently substituting zeros
+    — pretending the spread is 0 trips close-conditions and pretending marks
+    are 0 produces negative-infinity basis PnL.
+    """
+    high, low = quote.high_venue, quote.low_venue
+    if position.short_venue == high.venue and position.long_venue == low.venue:
+        return high, low
+    if position.short_venue == low.venue and position.long_venue == high.venue:
+        return low, high
+    return None, None
+
+
+def _basis_pnl(
+    short_state: PerpMarketState, long_state: PerpMarketState, position: Position
+) -> float:
+    """Mark-to-market basis PnL: long leg appreciates at long_state.mark,
+    short leg appreciates as short_state.mark falls."""
+    long_pnl = (long_state.mark_price - position.long_entry_price) * position.long_size_tokens
+    short_pnl = (position.short_entry_price - short_state.mark_price) * position.short_size_tokens
+    return long_pnl + short_pnl
 
 
 @dataclass(frozen=True)
@@ -107,7 +137,9 @@ class BacktestConfig:
     close_spread_bps_per_hour: float = 0.5      # close when spread shrinks below this
     max_holding_hours: float = 168.0            # 7 days cap
     max_drawdown_pct: float = 1.0               # gate
-    one_position_per_symbol: bool = True
+    # The simulator holds at most one position per symbol per quote stream.
+    # Multi-position support is intentionally out of scope; callers wanting
+    # symbol-parallel evaluation should run separate streams.
 
 
 def run_backtest(
@@ -124,7 +156,6 @@ def run_backtest(
     cfg = config or BacktestConfig()
     trades: list[Trade] = []
     open_position: Position | None = None
-    open_signal: ArbSignal | None = None
     cumulative_funding_pnl = 0.0
     # last_accrual_ts: timestamp at which funding was last accrued.
     # Set to opened_at on open, then advanced to the current quote's timestamp
@@ -143,7 +174,6 @@ def run_backtest(
                 # Open position at recommended size
                 size_tokens_high = signal.recommended_size_usd / quote.high_venue.mark_price
                 size_tokens_low = signal.recommended_size_usd / quote.low_venue.mark_price
-                open_signal = signal
                 open_position = Position(
                     symbol=quote.symbol,
                     opened_at=quote.timestamp,
@@ -160,36 +190,29 @@ def run_backtest(
                 last_accrual_ts = quote.timestamp
             continue
 
-        # Position is open — accrue funding PnL since last sample.
-        # Funding accrual model: spread × notional × Δhours-since-last-quote.
-        # CRITICAL: compute spread in the POSITION'S carry direction
-        # (short_venue.rate − long_venue.rate), NOT `high - low` of the
-        # current quote. If venues rotate between samples, `high - low`
-        # silently flips sign and the position would appear to keep earning
-        # when in reality it's now paying funding. Use the venue identities
-        # captured at open-time. If the current quote doesn't cover both
-        # of the position's venues, fall back to current high-low (the
-        # detector layer will flag the inconsistency separately).
-        assert open_signal is not None
+        # Position is open — accrue funding PnL + check close conditions.
+        # CRITICAL: resolve venues in the POSITION'S carry direction, not
+        # `quote.high_venue` / `quote.low_venue`. If venues rotated since
+        # open, high/low silently flips sign for both spread AND basis PnL.
+        # If the current quote doesn't cover both of the position's venues,
+        # SKIP this iteration entirely (don't fake-close at fake-zero spread,
+        # don't fake-basis-PnL at the wrong marks).
+        short_state, long_state = _resolve_position_venues(quote, open_position)
+        if short_state is None or long_state is None:
+            # Venue-data gap — don't accrue, don't evaluate close. The
+            # next quote that covers both venues will resume.
+            last_quote = quote
+            continue
+
         hours_held = (quote.timestamp - open_position.opened_at) / 3600
-        h_state, l_state = quote.high_venue, quote.low_venue
-        if open_position.short_venue == h_state.venue and open_position.long_venue == l_state.venue:
-            current_spread_hourly = (
-                h_state.funding_rate.hourly_rate - l_state.funding_rate.hourly_rate
-            )
-        elif open_position.short_venue == l_state.venue and open_position.long_venue == h_state.venue:
-            # Venues rotated since open — sign-flipped carry
-            current_spread_hourly = (
-                l_state.funding_rate.hourly_rate - h_state.funding_rate.hourly_rate
-            )
-        else:
-            # Quote doesn't match position venues; skip accrual this step
-            current_spread_hourly = 0.0
+        current_spread_hourly = (
+            short_state.funding_rate.hourly_rate - long_state.funding_rate.hourly_rate
+        )
         delta_hours = max(0.0, (quote.timestamp - last_accrual_ts) / 3600)
         cumulative_funding_pnl += current_spread_hourly * open_position.notional_usd * delta_hours
         last_accrual_ts = quote.timestamp
 
-        # Check close conditions. `current_spread_hourly` is now in the
+        # Check close conditions. `current_spread_hourly` is in the
         # position's carry direction (positive = still earning), so the
         # convergence check correctly fires when carry shrinks below
         # threshold OR flips negative.
@@ -206,15 +229,10 @@ def run_backtest(
             close_reason = "max_drawdown"
 
         if close_reason:
-            # Estimate basis PnL — both legs were opened delta-neutral; if the
-            # MARK prices have drifted, there's residual price PnL.
-            long_pnl = (
-                quote.low_venue.mark_price - open_position.long_entry_price
-            ) * open_position.long_size_tokens
-            short_pnl = (
-                open_position.short_entry_price - quote.high_venue.mark_price
-            ) * open_position.short_size_tokens
-            basis_pnl = long_pnl + short_pnl
+            # Basis PnL — read marks via POSITION-DIRECTION states, NOT
+            # `quote.high_venue` / `quote.low_venue`. Same rotation hazard
+            # as the spread (see Round-4 audit fix).
+            basis_pnl = _basis_pnl(short_state, long_state, open_position)
             fees = (
                 open_position.notional_usd
                 * cfg.thresholds.taker_fee_bps
@@ -236,18 +254,18 @@ def run_backtest(
                 )
             )
             open_position = None
-            open_signal = None
             cumulative_funding_pnl = 0.0
 
-    # If position still open at end-of-data, force-close
+    # If position still open at end-of-data, force-close. Same rotation-aware
+    # resolution as the mid-loop path.
     if open_position is not None and last_quote is not None:
-        long_pnl = (
-            last_quote.low_venue.mark_price - open_position.long_entry_price
-        ) * open_position.long_size_tokens
-        short_pnl = (
-            open_position.short_entry_price - last_quote.high_venue.mark_price
-        ) * open_position.short_size_tokens
-        basis_pnl = long_pnl + short_pnl
+        short_state, long_state = _resolve_position_venues(last_quote, open_position)
+        if short_state is None or long_state is None:
+            # Last quote didn't cover position venues — record force-close
+            # with zero basis PnL and explicit reason for the audit trail.
+            basis_pnl = 0.0
+        else:
+            basis_pnl = _basis_pnl(short_state, long_state, open_position)
         fees = (
             open_position.notional_usd * cfg.thresholds.taker_fee_bps / 10_000 * 4
         )
