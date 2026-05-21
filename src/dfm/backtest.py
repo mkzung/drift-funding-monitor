@@ -200,8 +200,8 @@ def run_backtest(
         short_state, long_state = _resolve_position_venues(quote, open_position)
         if short_state is None or long_state is None:
             # Venue-data gap — don't accrue, don't evaluate close. The
-            # next quote that covers both venues will resume.
-            last_quote = quote
+            # next quote that covers both venues will resume. (last_quote
+            # is already assigned at the top of the loop.)
             continue
 
         hours_held = (quote.timestamp - open_position.opened_at) / 3600

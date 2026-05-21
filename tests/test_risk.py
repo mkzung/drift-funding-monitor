@@ -166,3 +166,57 @@ class TestMaxDrawdownGate:
         res = det.run(pos, realized_pnl_usd=0)
         # Tiny notional, zero PnL → dd_pct = 0, not triggered
         assert res.triggered is False
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Round-5 regression: ConcentrationRisk must NOT report "balanced" when
+# OI data is unknown (both long+short = 0 = HL sentinel).
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_concentration_risk_signals_unknown_when_oi_missing():
+    """HyperliquidClient sets open_interest_{long,short} = 0 when the
+    venue feed doesn't expose a long/short split. Pre-Round-5 the
+    detector then reported "OI imbalance: +0% (balanced)" — a
+    misleading-data-as-safe report. Post-fix it must explicitly say
+    "data unavailable; check skipped".
+    """
+    from dfm.risk import ConcentrationRisk
+    from dfm.state import FundingRate, PerpMarketState, Venue
+
+    unknown_oi_state = PerpMarketState(
+        venue=Venue.HYPERLIQUID, symbol="SOL-PERP", timestamp=1_716_000_000,
+        mark_price=150.0, index_price=150.0,
+        bid_depth_usd=500_000, ask_depth_usd=500_000,
+        open_interest_long=0.0, open_interest_short=0.0,
+        funding_rate=FundingRate(
+            venue=Venue.HYPERLIQUID, symbol="SOL-PERP",
+            timestamp=1_716_000_000, hourly_rate=0.0001,
+        ),
+    )
+    r = ConcentrationRisk().run(unknown_oi_state)
+    assert r.triggered is False
+    assert r.severity == 0.0
+    assert "unavailable" in r.headline.lower()
+    assert r.evidence.get("data_available") is False
+
+
+def test_concentration_risk_real_imbalance_still_fires():
+    """Sanity: real OI data still triggers when imbalance exceeds threshold."""
+    from dfm.risk import ConcentrationRisk
+    from dfm.state import FundingRate, PerpMarketState, Venue
+
+    heavy_long_state = PerpMarketState(
+        venue=Venue.DRIFT, symbol="SOL-PERP", timestamp=1_716_000_000,
+        mark_price=150.0, index_price=150.0,
+        bid_depth_usd=500_000, ask_depth_usd=500_000,
+        open_interest_long=9_000_000.0, open_interest_short=1_000_000.0,
+        funding_rate=FundingRate(
+            venue=Venue.DRIFT, symbol="SOL-PERP",
+            timestamp=1_716_000_000, hourly_rate=0.0005,
+        ),
+    )
+    r = ConcentrationRisk(max_imbalance=0.5).run(heavy_long_state)
+    assert r.triggered is True
+    assert r.evidence.get("data_available") is True
+    assert r.evidence["imbalance"] > 0.5

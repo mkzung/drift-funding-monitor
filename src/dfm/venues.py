@@ -140,18 +140,41 @@ class HyperliquidClient(VenueClient):
         if not meta or not isinstance(meta, list) or len(meta) < 2:
             return None
         meta_info, ctxs = meta[0], meta[1]
+        if not isinstance(meta_info, dict) or not isinstance(ctxs, list):
+            return None
         universe = meta_info.get("universe", [])
-        idx = next((i for i, a in enumerate(universe) if a.get("name") == sym), None)
+        if not isinstance(universe, list):
+            return None
+        try:
+            idx = next(
+                (i for i, a in enumerate(universe)
+                 if isinstance(a, dict) and a.get("name") == sym),
+                None,
+            )
+        except (AttributeError, TypeError):
+            return None
         if idx is None or idx >= len(ctxs):
             return None
         ctx = ctxs[idx]
+        if not isinstance(ctx, dict):
+            return None
+        # Reject zero/negative prices BEFORE coercing to 1.0 — a zero mark
+        # from the venue is a data-error signal that ConcentrationRisk /
+        # BasisBlowoutRisk would otherwise misread as a real $1 mark.
+        try:
+            mark = float(ctx.get("markPx", 0))
+            index = float(ctx.get("oraclePx", 0))
+        except (TypeError, ValueError):
+            return None
+        if mark <= 0 or index <= 0:
+            return None
         ts = int(time.time())
         return PerpMarketState(
             venue=self.venue,
             symbol=sym,
             timestamp=ts,
-            mark_price=float(ctx.get("markPx", 0)) or 1.0,
-            index_price=float(ctx.get("oraclePx", 0)) or 1.0,
+            mark_price=mark,
+            index_price=index,
             # HL's `metaAndAssetCtxs` reports total `openInterest` (in base
             # units, not USD) as a single scalar — there's no long/short
             # breakdown in this endpoint. Splitting 50/50 (prior version)
@@ -194,7 +217,13 @@ class OrderlyClient(VenueClient):
                 payload = resp.json()
             except (httpx.HTTPError, ValueError):
                 return None
+        # Defensive: Orderly returns {"success":..., "data":{...}}; reject
+        # any other shape (list, scalar, null) without crashing.
+        if not isinstance(payload, dict):
+            return None
         data = payload.get("data", {})
+        if not isinstance(data, dict):
+            return None
         # Orderly reports `last_funding_rate` over the market's funding
         # interval. Default is 8h on Orderly but some pairs shipped at 1h;
         # VERIFY via /v1/public/info before deploying live. The /8 here
@@ -254,6 +283,9 @@ class BackpackClient(VenueClient):
         if not payload or not isinstance(payload, list):
             return None
         latest = payload[0]
+        # Defensive: list element must be a dict — reject otherwise.
+        if not isinstance(latest, dict):
+            return None
         # Backpack reports the funding rate over the market's funding
         # interval. Most perp markets ship with an 8-hour interval, but
         # some have 1h or 4h — VERIFY per-market via /api/v1/markets

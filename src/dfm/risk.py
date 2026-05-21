@@ -257,6 +257,25 @@ class ConcentrationRisk:
         self.max_imbalance = max_imbalance
 
     def run(self, state: PerpMarketState) -> RiskDetectorResult:
+        # If OI long/short is unknown (both 0), the venue feed doesn't
+        # expose a long/short breakdown. Reporting "+0% balanced" is
+        # MISLEADING — caller would read it as "book is in balance" when
+        # truth is "we don't know". Emit explicit unavailable-data result.
+        if state.open_interest_long == 0 and state.open_interest_short == 0:
+            return RiskDetectorResult(
+                name="ConcentrationRisk",
+                triggered=False,
+                severity=0.0,
+                headline=(
+                    f"OI data unavailable on {state.venue.value} "
+                    f"{state.symbol}; concentration check skipped."
+                ),
+                evidence={
+                    "venue": state.venue.value,
+                    "symbol": state.symbol,
+                    "data_available": False,
+                },
+            )
         imb = abs(state.open_interest_imbalance)
         triggered = imb > self.max_imbalance
         severity = max(0.0, min(1.0, imb / max(self.max_imbalance, 1e-9)))
@@ -275,6 +294,7 @@ class ConcentrationRisk:
                 "open_interest_long": state.open_interest_long,
                 "open_interest_short": state.open_interest_short,
                 "imbalance": state.open_interest_imbalance,
+                "data_available": True,
             },
         )
 
