@@ -160,22 +160,39 @@ def run_backtest(
                 last_accrual_ts = quote.timestamp
             continue
 
-        # Position is open — accrue funding PnL since last sample
-        assert open_signal is not None
+        # Position is open — accrue funding PnL since last sample.
         # Funding accrual model: spread × notional × Δhours-since-last-quote.
-        # Use trapezoidal-style approximation with the CURRENT spread; this
-        # under-counts slightly when spread is decaying and over-counts when
-        # it's accelerating, but is consistent across the loop.
+        # CRITICAL: compute spread in the POSITION'S carry direction
+        # (short_venue.rate − long_venue.rate), NOT `high - low` of the
+        # current quote. If venues rotate between samples, `high - low`
+        # silently flips sign and the position would appear to keep earning
+        # when in reality it's now paying funding. Use the venue identities
+        # captured at open-time. If the current quote doesn't cover both
+        # of the position's venues, fall back to current high-low (the
+        # detector layer will flag the inconsistency separately).
+        assert open_signal is not None
         hours_held = (quote.timestamp - open_position.opened_at) / 3600
-        current_spread_hourly = (
-            quote.high_venue.funding_rate.hourly_rate
-            - quote.low_venue.funding_rate.hourly_rate
-        )
+        h_state, l_state = quote.high_venue, quote.low_venue
+        if open_position.short_venue == h_state.venue and open_position.long_venue == l_state.venue:
+            current_spread_hourly = (
+                h_state.funding_rate.hourly_rate - l_state.funding_rate.hourly_rate
+            )
+        elif open_position.short_venue == l_state.venue and open_position.long_venue == h_state.venue:
+            # Venues rotated since open — sign-flipped carry
+            current_spread_hourly = (
+                l_state.funding_rate.hourly_rate - h_state.funding_rate.hourly_rate
+            )
+        else:
+            # Quote doesn't match position venues; skip accrual this step
+            current_spread_hourly = 0.0
         delta_hours = max(0.0, (quote.timestamp - last_accrual_ts) / 3600)
         cumulative_funding_pnl += current_spread_hourly * open_position.notional_usd * delta_hours
         last_accrual_ts = quote.timestamp
 
-        # Check close conditions
+        # Check close conditions. `current_spread_hourly` is now in the
+        # position's carry direction (positive = still earning), so the
+        # convergence check correctly fires when carry shrinks below
+        # threshold OR flips negative.
         close_reason = ""
         if current_spread_hourly * 10_000 < cfg.close_spread_bps_per_hour:
             close_reason = "spread_converged"

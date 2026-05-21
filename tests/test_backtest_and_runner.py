@@ -56,6 +56,52 @@ class TestBacktest:
                   "pnl_pct_std", "sharpe_proxy"):
             assert k in d
 
+    def test_backtest_accrual_respects_venue_rotation(self):
+        """Regression test for the v0.1.1 venue-rotation bug.
+
+        If the same two venues swap "high" and "low" between samples while
+        the position stays open, the carry direction inverts and accrual
+        should sign-flip. Prior to the fix, `current_spread_hourly` was
+        always `quote.high - quote.low` (≥0) which kept "earning" forever
+        even though the trade was now paying funding.
+        """
+        from dfm.state import CrossVenueQuote, FundingRate, PerpMarketState, Venue
+        def st(venue, hr, ts):
+            return PerpMarketState(
+                venue=venue, symbol="SOL-PERP", timestamp=ts,
+                mark_price=150.0, index_price=150.0,
+                bid_depth_usd=500_000, ask_depth_usd=500_000,
+                funding_rate=FundingRate(venue=venue, symbol="SOL-PERP", timestamp=ts, hourly_rate=hr),
+            )
+        # 4 quotes; venues rotate at t=2h
+        q1 = CrossVenueQuote(symbol="SOL-PERP", timestamp=0,
+            high_venue=st(Venue.DRIFT, 0.0005, 0), low_venue=st(Venue.HYPERLIQUID, 0.0001, 0))
+        q2 = CrossVenueQuote(symbol="SOL-PERP", timestamp=3600,
+            high_venue=st(Venue.DRIFT, 0.0005, 3600), low_venue=st(Venue.HYPERLIQUID, 0.0001, 3600))
+        q3 = CrossVenueQuote(symbol="SOL-PERP", timestamp=7200,
+            high_venue=st(Venue.HYPERLIQUID, 0.0005, 7200), low_venue=st(Venue.DRIFT, 0.0001, 7200))
+        q4 = CrossVenueQuote(symbol="SOL-PERP", timestamp=10800,
+            high_venue=st(Venue.HYPERLIQUID, 0.0005, 10800), low_venue=st(Venue.DRIFT, 0.0001, 10800))
+        result = run_backtest([q1, q2, q3, q4], BacktestConfig(
+            thresholds=SignalThresholds(taker_fee_bps=0.0),
+            close_spread_bps_per_hour=-10.0,  # don't close on spread-converge
+            max_holding_hours=100,
+        ))
+        # Position opened with +0.0004/h carry. Venues rotate at t=2h,
+        # flipping carry to -0.0004/h for the remaining 1h. End-of-interval
+        # accrual convention attributes 1h of +carry and 2h of -carry → -$40.
+        # Pre-fix (rotation-blind), this would be +$120 (all 3 accruals
+        # treated as positive carry).
+        assert result.n_trades == 1
+        t = result.trades[0]
+        # Key invariant: accrual must be NEGATIVE or near-zero, not the
+        # pre-fix's ~+$120. Tight upper bound proves the rotation is seen.
+        assert t.funding_pnl_usd < 20.0, (
+            f"Venue-rotation accrual = ${t.funding_pnl_usd:.2f}; "
+            f"pre-fix bug returned ~$120 (rotation ignored). "
+            f"Post-fix should be ≤ 0 ± small trapezoidal artifact."
+        )
+
     def test_funding_accrual_matches_closed_form(self):
         """Regression test for the v0.1.0 over-accrual bug.
 

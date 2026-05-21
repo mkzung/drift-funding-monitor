@@ -73,13 +73,11 @@ class DriftClient(VenueClient):
     """
 
     venue = Venue.DRIFT
-    # Drift's HTTP surface has shifted between releases. We intentionally do
-    # NOT hardcode an endpoint that may rot; users override via env or by
-    # subclassing.
-    BASE_URL = "https://data.api.drift.trade"
 
     def __init__(self, base_url: str | None = None, timeout_s: float = 8.0):
-        self.base_url = base_url or self.BASE_URL
+        # Kept for API parity with the other clients; unused by the stub
+        # body. A real subclass would assign self.base_url here and use it.
+        self.base_url = base_url or ""
         self.timeout_s = timeout_s
 
     def normalize_symbol(self, canonical: str) -> str:
