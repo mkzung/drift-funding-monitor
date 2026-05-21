@@ -126,6 +126,13 @@ def run_backtest(
     open_position: Position | None = None
     open_signal: ArbSignal | None = None
     cumulative_funding_pnl = 0.0
+    # last_accrual_ts: timestamp at which funding was last accrued.
+    # Set to opened_at on open, then advanced to the current quote's timestamp
+    # after each accrual. This is the FIX for the previous over-accrual bug
+    # where delta_hours was measured from open_at on every iteration, causing
+    # PnL to compound as the sum of an arithmetic series instead of summing
+    # disjoint Δt intervals.
+    last_accrual_ts: int = 0
 
     last_quote: CrossVenueQuote | None = None
     for quote in sorted(quote_stream, key=lambda q: q.timestamp):
@@ -150,22 +157,23 @@ def run_backtest(
                     - quote.low_venue.funding_rate.hourly_rate,
                 )
                 cumulative_funding_pnl = 0.0
+                last_accrual_ts = quote.timestamp
             continue
 
         # Position is open — accrue funding PnL since last sample
         assert open_signal is not None
-        # Funding accrual model: spread × notional × Δhours
+        # Funding accrual model: spread × notional × Δhours-since-last-quote.
+        # Use trapezoidal-style approximation with the CURRENT spread; this
+        # under-counts slightly when spread is decaying and over-counts when
+        # it's accelerating, but is consistent across the loop.
         hours_held = (quote.timestamp - open_position.opened_at) / 3600
-        # We accrue based on current observed spread (linear-in-time approximation)
         current_spread_hourly = (
             quote.high_venue.funding_rate.hourly_rate
             - quote.low_venue.funding_rate.hourly_rate
         )
-        # Δhours since last sample
-        # For first iteration after open, last sample timestamp = open_position.opened_at.
-        last_ts = open_position.opened_at if not trades or trades[-1].symbol != quote.symbol else trades[-1].closed_at
-        delta_hours = max(0.0, (quote.timestamp - last_ts) / 3600)
+        delta_hours = max(0.0, (quote.timestamp - last_accrual_ts) / 3600)
         cumulative_funding_pnl += current_spread_hourly * open_position.notional_usd * delta_hours
+        last_accrual_ts = quote.timestamp
 
         # Check close conditions
         close_reason = ""

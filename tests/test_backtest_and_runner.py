@@ -56,6 +56,43 @@ class TestBacktest:
                   "pnl_pct_std", "sharpe_proxy"):
             assert k in d
 
+    def test_funding_accrual_matches_closed_form(self):
+        """Regression test for the v0.1.0 over-accrual bug.
+
+        With constant spread Δr/hour and constant notional N held for T hours,
+        cumulative funding PnL is EXACTLY N × Δr × T. Any deviation > 1%
+        means the per-step accrual is mis-computing Δt (the v0.1.0 bug
+        accumulated Σ(t_i - t_open) instead of Σ(t_i - t_{i-1}), inflating
+        by ~(n+1)/2).
+        """
+        # 5 quotes 1h apart, constant 0.0004/h high vs 0.00005/h low.
+        # Expected spread: 0.00035 per hour.
+        # Recommended size: 500_000 depth × 0.20 = 100_000 USD.
+        # Position opens at t=0, held until t=14_400 (4 hours).
+        # Expected funding PnL: 100_000 × 0.00035 × 4 = $140.
+        stream = list(make_quote_stream(
+            n_samples=5,
+            initial_spread_hourly=0.0004,
+            final_spread_hourly=0.0004,
+            interval_seconds=3600,
+        ))
+        cfg = BacktestConfig(
+            thresholds=SignalThresholds(taker_fee_bps=0.0),
+            close_spread_bps_per_hour=0.01,  # don't close on the constant spread
+            max_holding_hours=100,
+        )
+        result = run_backtest(stream, cfg)
+        assert result.n_trades == 1
+        trade = result.trades[0]
+        # 100k × 0.00035/h × 4h = $140
+        expected_funding_pnl = 100_000 * 0.00035 * 4.0
+        deviation_pct = abs(trade.funding_pnl_usd - expected_funding_pnl) / expected_funding_pnl
+        assert deviation_pct < 0.01, (
+            f"Funding PnL {trade.funding_pnl_usd:.2f} vs expected "
+            f"{expected_funding_pnl:.2f} — deviation {deviation_pct:.1%} > 1%. "
+            f"Likely accrual-Δt regression."
+        )
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Runner: position-side risk evaluation

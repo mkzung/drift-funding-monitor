@@ -180,9 +180,15 @@ class Position(BaseModel):
             + self.short_size_tokens * self.short_entry_price
         ) / 2
 
-    @property
     def is_delta_neutral(self, tolerance_pct: float = 0.5) -> bool:
-        """True if the two legs are within `tolerance_pct` notional of each other."""
+        """True if the two legs are within `tolerance_pct` notional of each other.
+
+        Plain method rather than a `@property` because the prior version was
+        a `@property` with a default parameter — legal Python but the
+        parameter was unreachable (you could only get the default-tolerance
+        result, never override). Now: call as `pos.is_delta_neutral()` or
+        `pos.is_delta_neutral(0.1)`.
+        """
         ln = self.long_size_tokens * self.long_entry_price
         sn = self.short_size_tokens * self.short_entry_price
         if max(ln, sn) == 0:

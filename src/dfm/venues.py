@@ -56,16 +56,27 @@ class VenueClient(ABC):
 
 
 class DriftClient(VenueClient):
-    """Drift Protocol REST + on-chain reader stub.
+    """Drift Protocol stub — production path TBD.
 
-    Real implementation requires `anchorpy` + Drift IDL to read perp market
-    state directly from Solana RPC. As a first pass, this client uses Drift's
-    public stats endpoint at `https://mainnet-beta.api.drift.trade/contracts`
-    which returns aggregated market state without on-chain parsing.
+    Drift state is best read directly from Solana RPC via the Anchor IDL
+    (`anchorpy` + `@drift-labs/sdk`). A REST-style funding endpoint exists at
+    `data.api.drift.trade` and may move; the canonical source of truth is the
+    on-chain `perp_market` account. This client returns None from the live
+    fetchers until either:
+
+      1. anchorpy + Drift IDL are wired in (preferred path), or
+      2. the user injects a Birdeye/Helius/Hubble-style indexed snapshot
+         via `FakeVenueClient`.
+
+    Tests use FakeVenueClient; production users should subclass this and
+    override `fetch_funding_rate` + `fetch_market_state`.
     """
 
     venue = Venue.DRIFT
-    BASE_URL = "https://mainnet-beta.api.drift.trade"
+    # Drift's HTTP surface has shifted between releases. We intentionally do
+    # NOT hardcode an endpoint that may rot; users override via env or by
+    # subclassing.
+    BASE_URL = "https://data.api.drift.trade"
 
     def __init__(self, base_url: str | None = None, timeout_s: float = 8.0):
         self.base_url = base_url or self.BASE_URL
@@ -76,49 +87,13 @@ class DriftClient(VenueClient):
         return canonical.upper()
 
     async def fetch_funding_rate(self, symbol: str) -> FundingRate | None:
-        sym = self.normalize_symbol(symbol)
-        url = f"{self.base_url}/contracts"
-        async with httpx.AsyncClient(timeout=self.timeout_s) as cli:
-            try:
-                resp = await cli.get(url)
-                resp.raise_for_status()
-                payload = resp.json()
-            except (httpx.HTTPError, ValueError):
-                return None
-        # Drift returns a list of contracts; find ours
-        match = next(
-            (c for c in payload.get("contracts", []) if c.get("ticker_id") == sym),
-            None,
-        )
-        if match is None:
-            return None
-        # Drift quotes "funding_rate" as the last-paid rate (per-hour, decimal)
-        return FundingRate(
-            venue=self.venue,
-            symbol=sym,
-            timestamp=int(time.time()),
-            hourly_rate=float(match.get("funding_rate", 0)),
-            next_funding_in_seconds=int(match.get("next_funding_time", 0))
-            - int(time.time()),
-        )
+        # Stub. Production users wire in anchorpy here or subclass to point
+        # at their indexer. Returning None keeps the scanner functional
+        # (Drift just gets skipped in scan_all_venues output).
+        return None
 
     async def fetch_market_state(self, symbol: str) -> PerpMarketState | None:
-        fr = await self.fetch_funding_rate(symbol)
-        if fr is None:
-            return None
-        # In a full implementation we'd parse the Anchor perp_market account
-        # for mark/index price, open interest, bid/ask depth. For now, return
-        # a thin state using funding-rate metadata only and let the scanner
-        # know via last_update_lag_s that depth fields are unset.
-        return PerpMarketState(
-            venue=self.venue,
-            symbol=fr.symbol,
-            timestamp=fr.timestamp,
-            mark_price=1.0,  # placeholder
-            index_price=1.0,
-            funding_rate=fr,
-            last_update_lag_s=999,  # signals "depth/price fields not populated"
-        )
+        return None
 
 
 class HyperliquidClient(VenueClient):
@@ -257,7 +232,9 @@ class BackpackClient(VenueClient):
 
     async def fetch_funding_rate(self, symbol: str) -> FundingRate | None:
         sym = self.normalize_symbol(symbol)
-        url = f"{self.base_url}/api/v1/fundingRates?symbol={sym}"
+        # Backpack's public REST uses kebab-case path segments and camelCase
+        # query keys: /api/v1/funding-rates?symbol=…&limit=1
+        url = f"{self.base_url}/api/v1/funding-rates?symbol={sym}&limit=1"
         async with httpx.AsyncClient(timeout=self.timeout_s) as cli:
             try:
                 resp = await cli.get(url)
@@ -268,6 +245,7 @@ class BackpackClient(VenueClient):
         if not payload or not isinstance(payload, list):
             return None
         latest = payload[0]
+        # Backpack reports the 8-hour funding rate; convert to hourly.
         return FundingRate(
             venue=self.venue,
             symbol=sym,

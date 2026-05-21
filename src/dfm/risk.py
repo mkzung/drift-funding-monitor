@@ -71,7 +71,39 @@ class FundingFlipRisk:
                 evidence={"hours_held": hours_held},
             )
 
-        current_spread = quote_now.spread_bps_per_hour / 10_000  # hourly rate
+        # Measure current spread in the SAME DIRECTION as the position's carry,
+        # NOT just `quote_now.spread_bps_per_hour` (which always uses the
+        # currently-highest venue as `high` and so will flip sign if rates
+        # rotate between venues). Position carry direction = funding rate on
+        # the SHORT venue minus funding on the LONG venue; positive means
+        # the trade is still earning.
+        high_state = quote_now.high_venue
+        low_state = quote_now.low_venue
+        if position.short_venue == high_state.venue and position.long_venue == low_state.venue:
+            current_spread = (
+                high_state.funding_rate.hourly_rate - low_state.funding_rate.hourly_rate
+            )
+        elif position.short_venue == low_state.venue and position.long_venue == high_state.venue:
+            # Venues rotated since open — what was high is now low. The
+            # position is now paying funding (negative carry).
+            current_spread = (
+                low_state.funding_rate.hourly_rate - high_state.funding_rate.hourly_rate
+            )
+        else:
+            # Quote doesn't cover the position's venues at all — defensive
+            # bail-out, treat as no signal.
+            return RiskDetectorResult(
+                name="FundingFlipRisk",
+                triggered=False,
+                severity=0.0,
+                headline="Quote venues don't match position venues; cannot evaluate flip risk.",
+                evidence={
+                    "position_short": position.short_venue.value,
+                    "position_long": position.long_venue.value,
+                    "quote_high": high_state.venue.value,
+                    "quote_low": low_state.venue.value,
+                },
+            )
         entry_spread = position.entry_funding_diff_hourly
         decay_per_hour = (entry_spread - current_spread) / hours_held
 
