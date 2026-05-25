@@ -26,6 +26,7 @@ import asyncio
 import logging
 import time
 from abc import ABC, abstractmethod
+from typing import Any
 
 import httpx
 
@@ -107,7 +108,7 @@ async def _get_with_retry(
 
 async def _post_with_retry(
     url: str,
-    json: dict,
+    json: dict[str, Any],
     timeout_s: float,
     *,
     max_retries: int = 3,
