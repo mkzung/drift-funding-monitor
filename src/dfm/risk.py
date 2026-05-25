@@ -122,6 +122,29 @@ class FundingFlipRisk:
             )
 
         hours_to_zero = current_spread / decay_per_hour
+        # If current_spread is already <= 0 the position has ALREADY flipped
+        # — there's no future "flip in N hours" to report. Emit a distinct
+        # "already flipped" headline (and hard-trigger) so the user reads
+        # the truth instead of nonsense like "flip in -2.5h".
+        if current_spread <= 0:
+            hours_since_flip = abs(hours_to_zero)
+            return RiskDetectorResult(
+                name="FundingFlipRisk",
+                triggered=True,
+                severity=1.0,
+                headline=(
+                    f"Spread already flipped; carry has been negative for "
+                    f"{hours_since_flip:.1f}h."
+                ),
+                evidence={
+                    "entry_spread_hourly": entry_spread,
+                    "current_spread_hourly": current_spread,
+                    "decay_per_hour": decay_per_hour,
+                    "hours_since_flip": hours_since_flip,
+                    "hours_held": hours_held,
+                    "already_flipped": True,
+                },
+            )
         triggered = hours_to_zero < self.min_buffer_hours
         severity = max(0.0, min(1.0, 1.0 - hours_to_zero / max(self.min_buffer_hours, 1e-9)))
         return RiskDetectorResult(

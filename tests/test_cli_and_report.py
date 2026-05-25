@@ -114,3 +114,23 @@ def test_cli_backtest_json(capsys):
     assert rc == 0
     parsed = json.loads(out)
     assert "summary" in parsed
+
+
+def test_backtest_markdown_has_synthetic_disclaimer():
+    """v0.2.0 fix: backtest summaries must carry a note that they use
+    synthetic data, so a reader scanning the markdown doesn't mistake the
+    "100% win rate" for a real-market backtest result."""
+    from dfm.synthetic import make_oscillating_spread
+    stream = list(make_oscillating_spread(n_samples=24, amplitude_hourly=0.0005))
+    result = run_backtest(stream)
+    md = backtest_as_markdown(result)
+    assert "synthetic" in md.lower()
+
+
+def test_backtest_html_has_synthetic_disclaimer():
+    """Same disclaimer requirement on the HTML path."""
+    from dfm.synthetic import make_oscillating_spread
+    stream = list(make_oscillating_spread(n_samples=24, amplitude_hourly=0.0005))
+    result = run_backtest(stream)
+    h = backtest_as_html(result)
+    assert "synthetic" in h.lower()

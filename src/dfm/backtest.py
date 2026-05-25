@@ -131,7 +131,7 @@ class BacktestResult:
         }
 
 
-@dataclass
+@dataclass(frozen=True)
 class BacktestConfig:
     thresholds: SignalThresholds = field(default_factory=SignalThresholds)
     close_spread_bps_per_hour: float = 0.5      # close when spread shrinks below this
@@ -212,6 +212,13 @@ def run_backtest(
         cumulative_funding_pnl += current_spread_hourly * open_position.notional_usd * delta_hours
         last_accrual_ts = quote.timestamp
 
+        # Mark-to-market basis PnL at THIS quote — needed for the drawdown
+        # gate, which previously ignored basis losses and only checked
+        # funding PnL. A position can be down 5% on basis while funding is
+        # flat-positive, and the prior gate would never fire.
+        current_basis_pnl = _basis_pnl(short_state, long_state, open_position)
+        current_total_pnl = cumulative_funding_pnl + current_basis_pnl
+
         # Check close conditions. `current_spread_hourly` is in the
         # position's carry direction (positive = still earning), so the
         # convergence check correctly fires when carry shrinks below
@@ -223,16 +230,16 @@ def run_backtest(
             close_reason = "max_holding_hit"
         elif (
             open_position.notional_usd > 0
-            and cumulative_funding_pnl / open_position.notional_usd * 100
+            and current_total_pnl / open_position.notional_usd * 100
             < -cfg.max_drawdown_pct
         ):
             close_reason = "max_drawdown"
 
         if close_reason:
-            # Basis PnL — read marks via POSITION-DIRECTION states, NOT
-            # `quote.high_venue` / `quote.low_venue`. Same rotation hazard
-            # as the spread (see Round-4 audit fix).
-            basis_pnl = _basis_pnl(short_state, long_state, open_position)
+            # Basis PnL — already computed above via POSITION-DIRECTION
+            # states (rotation-safe, same as the spread path; Round-4
+            # audit fix). Reuse rather than recompute.
+            basis_pnl = current_basis_pnl
             fees = (
                 open_position.notional_usd
                 * cfg.thresholds.taker_fee_bps

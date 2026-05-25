@@ -60,7 +60,7 @@ def build_quote(
     )
 
 
-@dataclass
+@dataclass(frozen=True)
 class SignalThresholds:
     """Configurable thresholds for ArbSignal generation.
 
@@ -97,13 +97,17 @@ def evaluate(
     if dispersion > th.max_price_dispersion_pct:
         return None
 
-    # Binding-side depth = min(high.ask_depth, low.bid_depth) since we'd
-    # SHORT on the high-funding venue (sell into asks) and LONG on the
-    # low-funding venue (buy into bids — wait, actually: we LONG by hitting
-    # asks; so the binding sides are high.bid (sell-to-open short into bids
-    # on high venue) and low.ask (buy-to-open long into asks on low venue)).
-    # Use min(high.bid, low.ask) as the worst-case execution depth.
-    binding_depth = min(quote.high_venue.bid_depth_usd, quote.low_venue.ask_depth_usd)
+    # Entry binding side = min(high.bid, low.ask) since we OPEN by:
+    #   - SHORTING on the high-funding venue (sell-to-open into bids)
+    #   - LONGING on the low-funding venue (buy-to-open into asks)
+    # Closing binding side = min(high.ask, low.bid) since we EXIT by:
+    #   - buying the short leg back (hit asks on high venue)
+    #   - selling the long leg out (hit bids on low venue)
+    # A signal that clears entry depth but not closing depth is a trap —
+    # you can open the position but cannot exit cleanly. Both must clear.
+    entry_depth = min(quote.high_venue.bid_depth_usd, quote.low_venue.ask_depth_usd)
+    closing_depth = min(quote.high_venue.ask_depth_usd, quote.low_venue.bid_depth_usd)
+    binding_depth = min(entry_depth, closing_depth)
     if binding_depth < th.min_depth_usd:
         return None
 
@@ -146,6 +150,8 @@ def evaluate(
         confidence=confidence,
         evidence={
             "binding_depth_usd": binding_depth,
+            "entry_depth_usd": entry_depth,
+            "closing_depth_usd": closing_depth,
             "price_dispersion_pct": dispersion,
             "total_fee_bps": total_fee_bps,
             "high_funding_hourly": quote.high_venue.funding_rate.hourly_rate,

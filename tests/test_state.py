@@ -97,6 +97,58 @@ class TestCrossVenueQuote:
         assert math.isclose(q.price_dispersion_pct, 1.0 / 150.0 * 100, rel_tol=1e-9)
 
 
+class TestExtraForbid:
+    """v0.2.0: every Pydantic model now rejects unknown fields with
+    extra="forbid". Catches typos like `mark_pric=150` at construction
+    time instead of silently letting the field be dropped.
+    """
+
+    def test_funding_rate_rejects_unknown_field(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            from dfm.state import FundingRate
+            FundingRate(
+                venue=Venue.DRIFT, symbol="SOL-PERP", timestamp=0,
+                hourly_rate=0.0001,
+                typo_field="oops",  # type: ignore[call-arg]
+            )
+
+    def test_perp_market_state_rejects_unknown_field(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            PerpMarketState(
+                venue=Venue.DRIFT, symbol="SOL", timestamp=0,
+                mark_price=150, index_price=150,
+                funding_rate=make_funding_rate(Venue.DRIFT),
+                mark_pric=999,  # type: ignore[call-arg]
+            )
+
+    def test_cross_venue_quote_rejects_unknown_field(self):
+        from pydantic import ValidationError
+
+        from dfm.state import CrossVenueQuote
+        with pytest.raises(ValidationError):
+            CrossVenueQuote(
+                symbol="SOL", timestamp=0,
+                high_venue=make_market_state(Venue.DRIFT),
+                low_venue=make_market_state(Venue.HYPERLIQUID),
+                extra_field=42,  # type: ignore[call-arg]
+            )
+
+    def test_position_rejects_unknown_field(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            Position(
+                symbol="SOL-PERP", opened_at=0,
+                long_venue=Venue.HYPERLIQUID,
+                long_size_tokens=100, long_entry_price=150.0,
+                short_venue=Venue.DRIFT,
+                short_size_tokens=100, short_entry_price=150.0,
+                entry_funding_diff_hourly=0.0004,
+                leverage=5,  # type: ignore[call-arg]
+            )
+
+
 class TestPosition:
     def test_notional_usd(self):
         p = Position(

@@ -57,6 +57,12 @@ def backtest_as_markdown(result: BacktestResult, *, title: str = "Backtest") -> 
     lines.append(f"- **PnL % stdev:** {s['pnl_pct_std']:.3f}%")
     lines.append(f"- **Sharpe proxy:** {s['sharpe_proxy']:.2f}")
     lines.append("")
+    lines.append(
+        "_Note: backtests in this repo use synthetic sine-wave fixtures, "
+        "not real-market data; metrics here are sanity checks of the engine, "
+        "not expected returns._"
+    )
+    lines.append("")
     if result.trades:
         lines.append("| open | hours | size | funding | basis | fees | total | reason |")
         lines.append("|---:|---:|---:|---:|---:|---:|---:|---|")
@@ -153,7 +159,10 @@ def backtest_as_html(result: BacktestResult, *, title: str = "Backtest") -> str:
         f'<span class="badge">Sharpe-proxy {s["sharpe_proxy"]:.2f}</span>'
     )
     body.append(f'<div class="kv">Avg PnL {s["avg_pnl_pct"]:.3f}% · '
-                f'σ {s["pnl_pct_std"]:.3f}%</div></div>')
+                f'σ {s["pnl_pct_std"]:.3f}%</div>'
+                f'<div class="kv" style="margin-top:8px;font-style:italic">'
+                f'Note: synthetic sine-wave fixture; not a backtest of real '
+                f'markets.</div></div>')
     if result.trades:
         body.append("<table><tr><th>opened</th><th>hours</th><th>size</th>"
                     "<th>funding</th><th>basis</th><th>fees</th>"

@@ -154,6 +154,58 @@ class TestBacktest:
             f"Pre-fix bug would have returned negative."
         )
 
+    def test_drawdown_gate_fires_on_basis_loss_not_just_funding(self):
+        """v0.2.0 fix: max-drawdown gate must include basis PnL, not just
+        funding PnL. Pre-fix, a position bleeding basis but flat-positive
+        on funding would never trip the circuit-breaker.
+
+        Construct: open at t=0 with positive carry; at t=1h, marks diverge
+        so that long-leg loses heavily while funding accrual is small.
+        Combined PnL < -max_dd_pct → close with reason=max_drawdown.
+        """
+        from dfm.state import CrossVenueQuote, FundingRate, PerpMarketState, Venue
+
+        def st(venue, hr, mark, ts):
+            return PerpMarketState(
+                venue=venue, symbol="SOL-PERP", timestamp=ts,
+                mark_price=mark, index_price=mark,
+                bid_depth_usd=500_000, ask_depth_usd=500_000,
+                funding_rate=FundingRate(
+                    venue=venue, symbol="SOL-PERP", timestamp=ts, hourly_rate=hr,
+                ),
+            )
+
+        # t=0: signal opens (positive spread). Marks at 150.
+        q1 = CrossVenueQuote(
+            symbol="SOL-PERP", timestamp=0,
+            high_venue=st(Venue.DRIFT, 0.0005, 150.0, 0),
+            low_venue=st(Venue.HYPERLIQUID, 0.0001, 150.0, 0),
+        )
+        # t=1h: marks DIVERGE adversely — long leg crashes, short leg holds.
+        # Long is on HL (low venue at open). HL price drops 5% → long PnL
+        # = (142.5 - 150) × size_long ≈ -5% of notional. Funding accrual
+        # is +0.0004/h × 1h ≈ +0.04% of notional. Combined ≈ -5% → trip.
+        q2 = CrossVenueQuote(
+            symbol="SOL-PERP", timestamp=3600,
+            high_venue=st(Venue.DRIFT, 0.0005, 150.0, 3600),
+            low_venue=st(Venue.HYPERLIQUID, 0.0001, 142.5, 3600),
+        )
+        cfg = BacktestConfig(
+            thresholds=SignalThresholds(taker_fee_bps=0.0),
+            close_spread_bps_per_hour=-10.0,  # don't close on spread
+            max_holding_hours=100,
+            max_drawdown_pct=1.0,
+        )
+        result = run_backtest([q1, q2], cfg)
+        assert result.n_trades == 1
+        t = result.trades[0]
+        assert t.reason_close == "max_drawdown", (
+            f"Expected max_drawdown close from basis loss; got reason={t.reason_close} "
+            f"(funding=${t.funding_pnl_usd:.2f}, basis=${t.basis_pnl_usd:.2f}). "
+            f"Pre-fix the gate ignored basis and would NOT have fired."
+        )
+        assert t.basis_pnl_usd < -100, "expected significant basis loss"
+
     def test_funding_accrual_matches_closed_form(self):
         """Regression test for the v0.1.0 over-accrual bug.
 

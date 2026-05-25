@@ -83,9 +83,20 @@ def _cmd_scan(args: argparse.Namespace) -> int:
     ]
     result = asyncio.run(scan_symbol(clients, args.symbol))
     if result.signal is None:
-        print(f"No actionable signal on {args.symbol} (quote={result.quote is not None}).")
-        return 0
-    print(signals_as_markdown([result.signal], title=f"Live scan — {args.symbol}"))
+        print(
+            f"No actionable signal on {args.symbol} "
+            f"(quote={result.quote is not None})."
+        )
+    else:
+        print(signals_as_markdown([result.signal], title=f"Live scan — {args.symbol}"))
+    # Always print pre-open risks — they're the most diagnostically useful
+    # output when signal=None (data staleness, OI concentration, basis
+    # blowout reveal WHY no signal fired). Previously discarded silently.
+    if result.pre_open_risks:
+        print("\n## Pre-open risks\n")
+        for r in result.pre_open_risks:
+            flag = "TRIG" if r.triggered else "ok  "
+            print(f"- [{flag}] {r.name}: {r.headline}")
     return 0
 
 

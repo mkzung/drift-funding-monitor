@@ -1,0 +1,32 @@
+cff-version: 1.2.0
+message: "If you use this software in research, please cite it as below."
+title: "drift-funding-monitor: Cross-venue funding-rate arbitrage monitor for Drift Protocol and EVM perps"
+version: 0.2.0
+date-released: 2026-05-25
+url: "https://github.com/mkzung/drift-funding-monitor"
+repository-code: "https://github.com/mkzung/drift-funding-monitor"
+license: MIT
+type: software
+authors:
+  - family-names: Gorbuk
+    given-names: Max
+    alias: mkzung
+keywords:
+  - drift-protocol
+  - perpetual-futures
+  - funding-rate-arbitrage
+  - solana
+  - hyperliquid
+  - orderly
+  - backpack
+  - defi-risk
+  - quantitative-finance
+abstract: >-
+  A read-only monitor for cross-venue perp funding-rate arbitrage covering
+  Drift Protocol (Solana), Hyperliquid, Orderly, and Backpack. Ships a
+  signal evaluator with confidence scoring, six pure-function risk
+  detectors (funding-flip, liquidity imbalance, data staleness, OI
+  concentration, basis blowout, max-drawdown gate), a deterministic
+  replay backtester, and JSON / Markdown / HTML reporting. Hermetic CI
+  via `FakeVenueClient`. Live scanning is currently limited to
+  Hyperliquid; other venues are scaffolded.

@@ -98,3 +98,49 @@ def test_signal_with_unrealistic_threshold_returns_none():
     q = make_cross_venue_quote(high_hourly_rate=0.0005, low_hourly_rate=0.0001)
     sig = evaluate(q, SignalThresholds(min_spread_bps_per_hour=1000.0))
     assert sig is None
+
+
+def test_evaluate_rejects_when_closing_depth_below_threshold():
+    """v0.2.0 fix: signal must check BOTH entry-side and closing-side
+    depth. A market where high.bid is deep but high.ask is thin (or
+    low.ask deep but low.bid thin) is a TRAP — you can open but cannot
+    close. Pre-fix only entry-side was checked, emitting signals that
+    no operator could safely exit.
+    """
+    from dfm.state import CrossVenueQuote, FundingRate, PerpMarketState
+    # Build a quote with deep entry-side depth but starved closing-side.
+    high = PerpMarketState(
+        venue=Venue.DRIFT, symbol="SOL-PERP", timestamp=0,
+        mark_price=150.0, index_price=150.0,
+        bid_depth_usd=500_000,  # entry side (we short-sell into bids): deep
+        ask_depth_usd=10_000,   # closing side (we buy-back from asks): thin
+        funding_rate=FundingRate(
+            venue=Venue.DRIFT, symbol="SOL-PERP", timestamp=0, hourly_rate=0.0005,
+        ),
+    )
+    low = PerpMarketState(
+        venue=Venue.HYPERLIQUID, symbol="SOL-PERP", timestamp=0,
+        mark_price=150.0, index_price=150.0,
+        bid_depth_usd=500_000,
+        ask_depth_usd=500_000,
+        funding_rate=FundingRate(
+            venue=Venue.HYPERLIQUID, symbol="SOL-PERP", timestamp=0, hourly_rate=0.0001,
+        ),
+    )
+    q = CrossVenueQuote(symbol="SOL-PERP", timestamp=0,
+                        high_venue=high, low_venue=low)
+    # Default min_depth_usd=50_000; high.ask_depth=10k → fails closing-side
+    sig = evaluate(q)
+    assert sig is None
+
+
+def test_evaluate_records_both_depth_sides_in_evidence():
+    """The evidence dict must surface both entry_depth_usd and
+    closing_depth_usd so the operator can read the binding side."""
+    q = make_cross_venue_quote(
+        high_hourly_rate=0.0005, low_hourly_rate=0.0001, depth_usd=500_000,
+    )
+    sig = evaluate(q)
+    assert sig is not None
+    assert "entry_depth_usd" in sig.evidence
+    assert "closing_depth_usd" in sig.evidence

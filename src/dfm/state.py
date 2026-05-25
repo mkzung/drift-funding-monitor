@@ -48,7 +48,7 @@ class Side(str, Enum):
 class FundingRate(BaseModel):
     """One funding-rate sample at one timestamp on one venue."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     venue: Venue
     symbol: str = Field(..., description='Asset symbol, e.g. "SOL-PERP" or "BTC-USD"')
@@ -75,7 +75,7 @@ class PerpMarketState(BaseModel):
     funding. Their spread drives the next funding rate.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     venue: Venue
     symbol: str
@@ -119,7 +119,7 @@ class CrossVenueQuote(BaseModel):
     signal magnitude.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     symbol: str
     timestamp: int
@@ -158,7 +158,7 @@ class Position(BaseModel):
       3. Liquidation buffer if either leg moves into margin distress
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     symbol: str
     opened_at: int = Field(..., description="Unix seconds")

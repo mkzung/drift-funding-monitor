@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "drift-funding-monitor"
-version = "0.1.2"
+version = "0.2.0"
 description = "Cross-venue funding-rate arbitrage monitor for Drift Protocol (Solana) and EVM-perp venues."
 readme = "README.md"
 license = { text = "MIT" }
@@ -22,10 +22,6 @@ dev = [
   "pytest-asyncio>=0.23",
   "ruff>=0.6",
   "mypy>=1.8",
-]
-streamlit = [
-  "streamlit>=1.30",
-  "pandas>=2.0",
 ]
 
 [project.scripts]

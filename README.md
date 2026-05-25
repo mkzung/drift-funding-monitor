@@ -8,6 +8,8 @@
 
 Companion to [`fundarb`](https://github.com/mkzung/fundarb): adds Drift Protocol (Solana's leading perp DEX) to the cross-venue arb universe and ships a backtest framework + 6 risk detectors for already-open positions.
 
+> **Live-scan scope (v0.2.0):** only **Hyperliquid** is fully wired to a live data source today. Drift, Orderly, and Backpack are scaffolded — symbol normalization, funding-interval discovery, and HTTP plumbing are in place, but the mark/index/depth surface for Drift requires an `anchorpy` + Drift IDL integration not yet shipped, and the Orderly/Backpack funding endpoints don't expose mark/index/OI in a single call. `dfm scan SOL-PERP` will return only the Hyperliquid leg; the other three clients return `None` (or partial state with sentinel `mark=index=1.0` for Orderly/Backpack) and are documented as such. Honesty over scope.
+
 ---
 
 ## What it does
@@ -57,7 +59,7 @@ Tests in `tests/` are hermetic — `FakeVenueClient` satisfies the `VenueClient`
 pip install -e ".[dev]"
 ```
 
-Python ≥ 3.10. Optional extras: `dfm[streamlit]` for a live dashboard.
+Python ≥ 3.10. No optional UI extras — the package is CLI-only and emits Markdown / JSON / standalone HTML for inspection.
 
 ---
 
@@ -85,6 +87,13 @@ dfm backtest --html backtest.html
 dfm scan SOL-PERP
 ```
 
+Only **Hyperliquid** returns a live, fully-populated `PerpMarketState` today.
+Drift returns `None` (stub — needs `anchorpy` + IDL wiring). Orderly and
+Backpack return funding-rate-only state with sentinel `mark=index=1.0` and
+`last_update_lag_s=999`, which the signal layer correctly down-weights via
+the freshness term. See the v0.2.0 entry in `CHANGELOG.md` for the
+remediation plan.
+
 ### Programmatic
 
 ```python
@@ -107,7 +116,9 @@ print(f"Trades: {result.n_trades}  PnL: ${result.total_pnl_usd:,.0f}  "
 
 - ❌ **An auto-executor.** Signals and risk detectors are reports; the package never signs or submits orders.
 - ❌ **A backtester with realistic slippage modeling.** Fees are flat taker bps; slippage beyond mark crossing is not modeled. Calibrate against your own exchange-specific cost model.
+- ❌ **A backtest of real markets.** The `dfm backtest` quickstart uses a **synthetic sine-wave fixture** so the engine produces deterministic round-trips for CI; the resulting "100% win rate" on the default demo is an engine sanity check, not a strategy backtest. Replace `make_oscillating_spread` with real historical CrossVenueQuote samples for any meaningful PnL claim.
 - ❌ **Production financial advice.** Backtest PnL on synthetic data is a sanity-check, not an expected-return estimate.
+- ❌ **A live monitor for all four venues.** Only Hyperliquid is fully wired today; see the live-scan section above.
 
 ---
 

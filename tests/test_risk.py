@@ -59,6 +59,40 @@ class TestFundingFlipRisk:
         with pytest.raises(ValueError):
             FundingFlipRisk(min_buffer_hours=0)
 
+    def test_already_flipped_emits_truthful_headline(self):
+        """v0.2.0 fix: when current_spread < 0 the headline must read
+        'spread already flipped; carry has been negative for {N}h', NOT
+        the nonsense 'flip in -2.5h' the prior version emitted.
+        """
+        det = FundingFlipRisk(min_buffer_hours=6.0)
+        # Position opened with +0.0004/h carry; rotation flipped it negative.
+        # Spread now -0.0001/h (carry-direction). Headline must call it out.
+        from dfm.state import CrossVenueQuote, FundingRate, PerpMarketState
+        def st(venue, hr):
+            return PerpMarketState(
+                venue=venue, symbol="SOL-PERP", timestamp=1_716_000_000,
+                mark_price=150.0, index_price=150.0,
+                bid_depth_usd=500_000, ask_depth_usd=500_000,
+                funding_rate=FundingRate(
+                    venue=venue, symbol="SOL-PERP",
+                    timestamp=1_716_000_000, hourly_rate=hr,
+                ),
+            )
+        # Position is short DRIFT / long HL. Quote now has DRIFT funding
+        # BELOW HL funding (rotation). In position direction:
+        # current_spread = drift_rate - hl_rate = 0.0001 - 0.0002 = -0.0001
+        q = CrossVenueQuote(
+            symbol="SOL-PERP", timestamp=1_716_000_000,
+            high_venue=st(Venue.HYPERLIQUID, 0.0002),
+            low_venue=st(Venue.DRIFT, 0.0001),
+        )
+        res = det.run(q, _open_position(), hours_held=2)
+        assert res.triggered is True
+        assert res.severity == 1.0
+        assert "already flipped" in res.headline.lower()
+        assert "-" not in res.headline.split("for")[-1]  # no negative-hours nonsense
+        assert res.evidence.get("already_flipped") is True
+
 
 class TestLiquidityImbalance:
     def test_ok_when_depth_above_requirement(self):
